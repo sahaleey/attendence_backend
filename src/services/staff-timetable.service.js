@@ -8,6 +8,7 @@ import {
 } from '../utils/date.js';
 import prisma from '../lib/prisma.js';
 import { getCurrentAcademicYear } from '../utils/academic-year.js';
+import { activeEnrollmentFilter } from '../utils/enrollment-status.js';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -360,7 +361,7 @@ export async function getClassList() {
     orderBy: { name: 'asc' },
     include: {
       enrollments: {
-        where: { academicYearId: year.id, status: 'ACTIVE' },
+        where: { academicYearId: year.id, status: activeEnrollmentFilter() },
         select: { id: true },
       },
     },

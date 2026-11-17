@@ -9,6 +9,7 @@ import calendarRoutes from './calendar.routes.js';
 import attendanceRoutes from './attendance.routes.js';
 import attendanceCorrectionsRoutes from './attendance-corrections.routes.js';
 import reportsRoutes from './reports.routes.js';
+import insightsRoutes from './insights.routes.js';
 import placeholderRoutes from './placeholder.routes.js';
 import timetableRoutes from './timetable.routes.js';
 import timetableSettingsRoutes from './timetable-settings.routes.js';
@@ -43,6 +44,7 @@ r.use('/attendance/adjustments', attendanceAdjustmentRoutes);
 r.use('/attendance/leave', attendanceLeaveRoutes);
 
 r.use('/reports', reportsRoutes);
+r.use('/insights', insightsRoutes);
 
 r.use('/period-configuration', periodConfigurationRoutes);
 r.use('/periods', periodRoutes);

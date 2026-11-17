@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma.js';
+import { ApiError } from '../utils/api-error.js';
 
 class SubjectAllocationService {
   /**
@@ -214,7 +215,7 @@ class SubjectAllocationService {
     });
     
     if (existing) {
-      throw new Error('This subject is already allocated to this class for this academic year');
+      throw new ApiError(409, 'This subject is already allocated to this class for this academic year');
     }
     
     // Verify all entities exist
@@ -293,7 +294,7 @@ class SubjectAllocationService {
     });
     
     if (assignments.length > 0) {
-      throw new Error(`Cannot delete allocation with ${assignments.length} staff assignment(s). Remove staff assignments first.`);
+      throw new ApiError(409, `Cannot delete allocation with ${assignments.length} staff assignment(s). Remove staff assignments first.`);
     }
     
     return prisma.subjectAllocation.delete({
@@ -312,14 +313,15 @@ class SubjectAllocationService {
         academicYearId
       },
       include: {
-        staffAssignments: true
+        staffAssignments: true,
+        subject: { select: { name: true } }
       }
     });
 
     // Check if any have staff assignments
     const withAssignments = allocations.filter(a => a.staffAssignments.length > 0);
     if (withAssignments.length > 0) {
-      throw new Error(
+      throw new ApiError(409, 
         `Cannot delete ${withAssignments.length} allocation(s) with staff assignments. ` +
         `Remove staff assignments first for: ${withAssignments.map(a => a.subject.name).join(', ')}`
       );
@@ -345,7 +347,7 @@ class SubjectAllocationService {
         prisma.academicYear.findUnique({
           where: { id: academicYearId }
         }).then(year => {
-          if (!year) throw new Error(`Academic year with ID ${academicYearId} not found`);
+          if (!year) throw new ApiError(404, `Academic year with ID ${academicYearId} not found`);
           return year;
         })
       );
@@ -356,7 +358,7 @@ class SubjectAllocationService {
         prisma.standard.findUnique({
           where: { id: standardId }
         }).then(standard => {
-          if (!standard) throw new Error(`Standard with ID ${standardId} not found`);
+          if (!standard) throw new ApiError(404, `Standard with ID ${standardId} not found`);
           return standard;
         })
       );
@@ -367,7 +369,7 @@ class SubjectAllocationService {
         prisma.subject.findUnique({
           where: { id: subjectId }
         }).then(subject => {
-          if (!subject) throw new Error(`Subject with ID ${subjectId} not found`);
+          if (!subject) throw new ApiError(404, `Subject with ID ${subjectId} not found`);
           return subject;
         })
       );
@@ -457,7 +459,7 @@ async toggleSubjectAllocation(standardId, academicYearId, subjectId, assign) {
     });
     
     if (existing) {
-      throw new Error('Subject is already allocated to this class');
+      throw new ApiError(409, 'Subject is already allocated to this class');
     }
     
     // Create allocation
@@ -491,7 +493,7 @@ async toggleSubjectAllocation(standardId, academicYearId, subjectId, assign) {
     });
     
     if (!allocation) {
-      throw new Error('Subject is not allocated to this class');
+      throw new ApiError(404, 'Subject is not allocated to this class');
     }
     
     // Check if there are staff assignments
@@ -502,7 +504,7 @@ async toggleSubjectAllocation(standardId, academicYearId, subjectId, assign) {
     });
     
     if (staffAssignments.length > 0) {
-      throw new Error(
+      throw new ApiError(409, 
         `Cannot unassign subject - it has ${staffAssignments.length} staff assignment(s). ` +
         `Remove staff assignments first.`
       );

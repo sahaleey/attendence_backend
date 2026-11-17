@@ -2,7 +2,7 @@ import prisma from '../lib/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { hashPassword } from '../utils/hash.js';
 import ROLES from '../permissions/role.constants.js';
-import { hasAdminRole } from '../permissions/resolve.js';
+import { hasAdminRole, resolvePermissions } from '../permissions/resolve.js';
 import {
   actorInfo,
   applyAccess,
@@ -31,10 +31,17 @@ async function loadTarget(id) {
   return u;
 }
 
-// Only administrators may touch an administrator account.
+// Only administrators may touch an administrator account, and non-admins may only
+// manage accounts whose access is a subset of their own (prevents takeover via password reset).
 function assertCanManage(actor, target) {
-  if (hasAdminRole(target) && !actorInfo(actor).isAdmin) {
+  const me = actorInfo(actor);
+  if (me.isAdmin) return;
+  if (hasAdminRole(target)) {
     throw new ApiError(403, 'Only an administrator can modify an administrator account');
+  }
+  const beyond = resolvePermissions(target).filter((p) => !me.permissions.has(p));
+  if (beyond.length) {
+    throw new ApiError(403, 'You cannot modify an account with permissions you do not have');
   }
 }
 

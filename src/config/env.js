@@ -12,6 +12,11 @@ if (process.env.NODE_ENV === 'production') {
       throw new Error(`${key} is required`);
     }
   }
+  for (const key of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET']) {
+    if (process.env[key].length < 32) {
+      console.warn(`[security] ${key} is shorter than 32 characters; use a long random secret`);
+    }
+  }
 }
 
 export const port = Number(process.env.PORT || 4000);

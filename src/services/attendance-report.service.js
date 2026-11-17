@@ -1,24 +1,29 @@
 import prisma from '../lib/prisma.js';
 import { ApiError } from '../utils/api-error.js';
-import { startOfDay, endOfDay, parseSchoolDate, todayKey } from '../utils/date.js';
+import { startOfDay, endOfDay, parseSchoolDateStrict, todayKey, businessNow } from '../utils/date.js';
+import { activeEnrollmentFilter } from '../utils/enrollment-status.js';
+import { getCurrentAcademicYear } from '../utils/academic-year.js';
 
-const resolveAcademicYear = async (academicYearId) => {
+export const resolveAcademicYear = async (academicYearId) => {
   if (academicYearId) {
     const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
     if (!year) throw new ApiError(404, 'Academic year not found');
     return year;
   }
 
-  const active = await prisma.academicYear.findFirst({ where: { status: 'ACTIVE' } });
-  if (!active) throw new ApiError(404, 'No active academic year found');
-  return active;
+  try {
+    return await getCurrentAcademicYear();
+  } catch {
+    throw new ApiError(404, 'No active academic year found');
+  }
 };
 
-const parseDate = (date) => {
-  if (!date) throw new ApiError(400, 'date is required (YYYY-MM-DD)');
-  const parsed = parseSchoolDate(date);
-  if (Number.isNaN(parsed.getTime())) throw new ApiError(400, 'Invalid date');
-  return parsed;
+const parseDate = (date, field = 'date') => parseSchoolDateStrict(date, field);
+
+const countStatuses = (records) => {
+  const counts = { PRESENT: 0, ABSENT: 0, LATE: 0, EXCUSED: 0 };
+  for (const r of records) if (r.status in counts) counts[r.status] += 1;
+  return counts;
 };
 
 // Daily grid: standards (rows) x periods (columns) for a given date.
@@ -45,7 +50,7 @@ export const getDailyReport = async ({ date, academicYearId }) => {
     }),
     prisma.studentEnrollment.groupBy({
       by: ['standardId'],
-      where: { academicYearId: year.id, status: 'ACTIVE' },
+      where: { academicYearId: year.id, status: activeEnrollmentFilter() },
       _count: { _all: true },
     }),
   ]);
@@ -63,17 +68,18 @@ export const getDailyReport = async ({ date, academicYearId }) => {
 
   const cellByKey = new Map();
   for (const s of sessions) {
-    const presentCount = s.records.filter((r) => r.status === 'PRESENT').length;
-    const absentCount = s.records.filter((r) => r.status === 'ABSENT').length;
+    const counts = countStatuses(s.records);
     cellByKey.set(`${s.standardId}:${s.periodId}`, {
       sessionId: s.id,
       sessionStatus: s.sessionStatus,
       subject: { id: s.subject.id, name: s.subject.name, code: s.subject.code },
       staff: { id: s.staff.id, name: s.staff.user.name },
       totalStudents: enrollmentByStandard[s.standardId] || 0,
-      markedCount: presentCount + absentCount,
-      presentCount,
-      absentCount,
+      markedCount: s.records.length,
+      presentCount: counts.PRESENT,
+      absentCount: counts.ABSENT,
+      lateCount: counts.LATE,
+      excusedCount: counts.EXCUSED,
     });
   }
 
@@ -93,14 +99,27 @@ export const getDailyReport = async ({ date, academicYearId }) => {
 
   const summary = sessions.reduce(
     (acc, s) => {
+      const counts = countStatuses(s.records);
       acc.totalSessions += 1;
       if (s.sessionStatus === 'MARKED') acc.markedSessions += 1;
+      else if (s.sessionStatus === 'STAFF_LEAVE') acc.staffLeaveSessions += 1;
       else acc.pendingSessions += 1;
-      acc.totalPresent += s.records.filter((r) => r.status === 'PRESENT').length;
-      acc.totalAbsent += s.records.filter((r) => r.status === 'ABSENT').length;
+      acc.totalPresent += counts.PRESENT;
+      acc.totalAbsent += counts.ABSENT;
+      acc.totalLate += counts.LATE;
+      acc.totalExcused += counts.EXCUSED;
       return acc;
     },
-    { totalSessions: 0, markedSessions: 0, pendingSessions: 0, totalPresent: 0, totalAbsent: 0 }
+    {
+      totalSessions: 0,
+      markedSessions: 0,
+      pendingSessions: 0,
+      staffLeaveSessions: 0,
+      totalPresent: 0,
+      totalAbsent: 0,
+      totalLate: 0,
+      totalExcused: 0,
+    }
   );
 
   return {
@@ -138,7 +157,10 @@ export const getSessionReport = async (sessionId) => {
     where: {
       academicYearId: session.academicYearId,
       standardId: session.standardId,
-      status: 'ACTIVE',
+      OR: [
+        { status: activeEnrollmentFilter() },
+        { attendance: { some: { attendanceSessionId: session.id } } },
+      ],
     },
     include: { student: true },
     orderBy: { rollNo: 'asc' },
@@ -162,9 +184,8 @@ export const getSessionReport = async (sessionId) => {
     };
   });
 
-  const presentCount = students.filter((s) => s.status === 'PRESENT').length;
-  const absentCount = students.filter((s) => s.status === 'ABSENT').length;
-  const unmarkedCount = students.length - presentCount - absentCount;
+  const counts = countStatuses(students);
+  const unmarkedCount = students.filter((s) => s.status === 'UNMARKED').length;
 
   return {
     session: {
@@ -184,15 +205,18 @@ export const getSessionReport = async (sessionId) => {
     },
     totals: {
       totalStudents: students.length,
-      presentCount,
-      absentCount,
+      presentCount: counts.PRESENT,
+      absentCount: counts.ABSENT,
+      lateCount: counts.LATE,
+      excusedCount: counts.EXCUSED,
       unmarkedCount,
     },
     students,
   };
 };
 
-// Every session still PENDING within a date range. This is a plain indexed
+// Every session not yet marked (PENDING, or STAFF_LEAVE awaiting a substitute/admin)
+// within a date range. `to` defaults to today so future sessions are not "unmarked". This is a plain indexed
 // query — it relies on sessions being materialized ahead of time by
 // attendance-session.service.js (generateForDate / generateForDateRange),
 // rather than recomputing "should a session exist here?" from the timetable
@@ -204,21 +228,26 @@ export const getUnmarkedReport = async ({
   to,
   standardId,
   staffId,
+  status,
   page = 1,
   pageSize = 50,
 }) => {
   const year = await resolveAcademicYear(academicYearId);
 
+  const UNMARKED_STATUSES = ['PENDING', 'STAFF_LEAVE'];
+  const requested = status ? String(status).trim().toUpperCase() : null;
+  if (requested && !UNMARKED_STATUSES.includes(requested)) {
+    throw new ApiError(400, `Invalid status. Use ${UNMARKED_STATUSES.join(' or ')}`);
+  }
+
   const where = {
     academicYearId: year.id,
-    sessionStatus: 'PENDING',
+    sessionStatus: requested || { in: UNMARKED_STATUSES },
+    attendanceDate: {
+      lte: endOfDay(to ? parseDate(to, 'to') : businessNow()),
+    },
   };
-
-  if (from || to) {
-    where.attendanceDate = {};
-    if (from) where.attendanceDate.gte = startOfDay(parseDate(from));
-    if (to) where.attendanceDate.lte = endOfDay(parseDate(to));
-  }
+  if (from) where.attendanceDate.gte = startOfDay(parseDate(from, 'from'));
   if (standardId) where.standardId = standardId;
   if (staffId) where.staffId = staffId;
 
@@ -247,6 +276,7 @@ export const getUnmarkedReport = async ({
     sessions: sessions.map((s) => ({
       sessionId: s.id,
       attendanceDate: s.attendanceDate,
+      sessionStatus: s.sessionStatus,
       standard: { id: s.standard.id, name: s.standard.name },
       subject: { id: s.subject.id, name: s.subject.name },
       period: { id: s.period.id, periodIndex: s.period.periodIndex, startTime: s.period.startTime },

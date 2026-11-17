@@ -586,6 +586,8 @@
 import prisma from '../lib/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { startOfDay, endOfDay, businessNow, schoolParts, weekdayOf } from '../utils/date.js';
+import { getCurrentAcademicYear } from '../utils/academic-year.js';
+import { getDateRules } from './attendance-session.service.js';
 
 const CLOSED_DAY_TYPES = new Set([
   'HOLIDAY',
@@ -658,18 +660,26 @@ const isDateInRange = (date, start, end) =>
  * definition independent from the database engine.
  */
 export const findCurrentPeriod = async ({ academicYearId, now }) => {
-    const periods = await prisma.period.findMany({
+  const weekday = getWeekdayEnum(now);
+  const periods = await prisma.period.findMany({
     where: {
       academicYearId,
-      weekday: getWeekdayEnum(now),   // ✅ Only get today's periods
+      // Periods without a weekday apply to every day (same outline for all days).
+      OR: [{ weekday }, { weekday: null }],
     },
     orderBy: { periodIndex: 'asc' },
   });
 
   const currentMinutes = getCurrentMinutes(now);
 
+  // A weekday-specific period wins over a generic one covering the same time.
+  const ordered = [
+    ...periods.filter((p) => p.weekday === weekday),
+    ...periods.filter((p) => p.weekday === null),
+  ];
+
   return (
-    periods.find((period) => {
+    ordered.find((period) => {
       const start = toMinutes(period.startTime);
       const end = toMinutes(period.endTime);
 
@@ -680,49 +690,18 @@ export const findCurrentPeriod = async ({ academicYearId, now }) => {
   );
 };
 
-const getActiveAcademicYear = async () => prisma.academicYear.findFirst();
+const getActiveAcademicYear = async () => {
+  try {
+    return await getCurrentAcademicYear();
+  } catch {
+    return null;
+  }
+};
 
 const isWorkingDay = async ({ academicYearId, date }) => {
-  // const calendarEntry = await prisma.academicCalendar.findUnique({
-  //   where: {
-  //     academicYearId_calendarDate: {
-  //       academicYearId,
-  //       calendarDate: startOfDay(date),
-  //     },
-  //   },
-  // });
-
-  // if (calendarEntry && CLOSED_DAY_TYPES.has(calendarEntry.dayType)) {
-  //   return {
-  //     working: false,
-  //     reason: 'HOLIDAY',
-  //     calendar: calendarEntry,
-  //   };
-  // }
-
-  // // WeeklyHoliday exists in the current schema. If your deployed schema does
-  // // not yet contain this model, remove this block until the migration is done.
-  // const weeklyHoliday = await prisma.weeklyHoliday.findUnique({
-  //   where: {
-  //     academicYearId_weekday: {
-  //       academicYearId,
-  //       weekday: getWeekdayEnum(date),
-  //     },
-  //   },
-  // });
-
-  // if (weeklyHoliday) {
-  //   return {
-  //     working: false,
-  //     reason: 'WEEKLY_HOLIDAY',
-  //     weeklyHoliday,
-  //   };
-  // }
-
-  return {
-    working: true,
-
-  };
+  const rules = await getDateRules(academicYearId, startOfDay(date));
+  if (rules.blockedAllDay) return { working: false, reason: rules.reason };
+  return { working: true };
 };
 
 const getStaff = async (userId) => {
@@ -795,7 +774,6 @@ const getDateSpecificEntries = async ({
       academicYearId,
       calendarDate: startOfDay(date),
       periodId,
-      attendanceRequired: true,
     },
     include: {
       standard: true,
@@ -923,30 +901,26 @@ const resolveAssignments = async ({
   date,
   period,
 }) => {
-  const dateSpecificEntries = await getDateSpecificEntries({
-    academicYearId,
-    date,
-    periodId: period.id,
-  });
+  const [dateSpecificEntries, normalEntries] = await Promise.all([
+    getDateSpecificEntries({ academicYearId, date, periodId: period.id }),
+    getNormalEntries({ academicYearId, weekday: getWeekdayEnum(date), periodId: period.id }),
+  ]);
 
-  let entries = dateSpecificEntries;
-  let source = 'DATE_SPECIFIC_TIMETABLE';
-
-  // A date-specific timetable for the period takes precedence. Only if there
-  // is no override do we fall back to the weekly timetable.
-  if (entries.length === 0) {
-    entries = await getNormalEntries({
-      academicYearId,
-      weekday: getWeekdayEnum(date),   // returns 'SUNDAY', 'MONDAY'...
-      periodId: period.id,
-    });
-
-    source = 'NORMAL_TIMETABLE';
-  }
+  // Date-specific entries override the weekly timetable per class, including
+  // overrides that do not require attendance.
+  const overriddenStandards = new Set(dateSpecificEntries.map((e) => e.standardId));
+  const entries = [
+    ...dateSpecificEntries
+      .filter((e) => e.attendanceRequired)
+      .map((entry) => ({ entry, source: 'DATE_SPECIFIC_TIMETABLE' })),
+    ...normalEntries
+      .filter((e) => !overriddenStandards.has(e.standardId))
+      .map((entry) => ({ entry, source: 'NORMAL_TIMETABLE' })),
+  ];
 
   const candidates = [];
 
-  for (const entry of entries) {
+  for (const { entry, source } of entries) {
     const resolved = await resolveCandidate({
       staffId,
       academicYearId,
@@ -985,11 +959,9 @@ const getGeneratedSession = async ({
     return null;
   }
 
-  if (session.staffId !== staffId) {
-    throw new ApiError(
-      409,
-      'Attendance session exists but is assigned to a different staff member'
-    );
+  // A substitute takes over a session generated before the substitution existed.
+  if (session.staffId !== staffId && !assignment.substitutionId) {
+    return { mismatch: true };
   }
 
   return session;
@@ -1096,6 +1068,7 @@ export const getCurrentAttendance = async (userId) => {
   }
 
   const sessions = [];
+  let mismatched = 0;
 
   for (const assignment of assignments) {
     const session = await getGeneratedSession({
@@ -1105,13 +1078,14 @@ export const getCurrentAttendance = async (userId) => {
       assignment,
     });
 
-    if (session) sessions.push(session);
+    if (session?.mismatch) mismatched++;
+    else if (session) sessions.push(session);
   }
 
   if (sessions.length === 0) {
     return {
       available: false,
-      reason: 'ATTENDANCE_SESSION_NOT_GENERATED',
+      reason: mismatched > 0 ? 'SESSION_ASSIGNED_TO_ANOTHER_STAFF' : 'ATTENDANCE_SESSION_NOT_GENERATED',
       serverTime: now,
       academicYear,
       period,

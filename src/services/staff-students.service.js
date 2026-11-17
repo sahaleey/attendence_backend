@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma.js';
 import { todayKey, endOfDay, weekdayOf, parseSchoolDateStrict } from '../utils/date.js';
 import { getCurrentAcademicYear } from '../utils/academic-year.js';
+import { activeEnrollmentFilter } from '../utils/enrollment-status.js';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -330,7 +331,7 @@ export async function getStudentFilterOptions() {
     orderBy: { name: 'asc' },
     include: {
       enrollments: {
-        where: { academicYearId: year.id, status: 'ACTIVE' },
+        where: { academicYearId: year.id, status: activeEnrollmentFilter() },
         select: { id: true },
       },
     },

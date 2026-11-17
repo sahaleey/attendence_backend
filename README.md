@@ -26,20 +26,21 @@ RBAC controls what a user can do. ReBAC/business rules control which academic re
 ## Setup
 
 ```bash
-cp .env.example .env
+cp .env.example .env        # set DATABASE_URL, JWT secrets, SEED_ADMIN_PASSWORD
 npm install
 npx prisma generate
-npx prisma migrate dev --name init
-npm run prisma:seed
+npx prisma migrate deploy   # or `npx prisma migrate dev` on a local dev database
+npm run prisma:seed         # permissions, roles, administrator
 npm run dev
 ```
 
-Default development admin:
+The seed creates (or keeps) the administrator `SEED_ADMIN_EMAIL` (default
+`admin@example.com`) with the password from `SEED_ADMIN_PASSWORD`; it refuses to run
+without one and never overwrites an existing password.
 
-- Email: `admin@example.com`
-- Password: `ChangeMe123!`
+Demo school data for development: `npm run seed:demo` (see `DEMO_ACCOUNTS.md`).
 
-Change this immediately. You can set `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` before seeding.
+Tests: `npm test` (Node's built-in test runner).
 
 ## Important attendance rules
 
@@ -55,7 +56,28 @@ Change this immediately. You can set `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD
 
 ## Production notes
 
-Before production, replace SQLite with PostgreSQL, use strong secrets, add a real job scheduler/queue, add request validation with a schema library such as Zod/Joi, add rate limiting, and add comprehensive integration tests.
+Use strong JWT secrets (32+ characters; a warning is logged otherwise), add a real job scheduler/queue and request validation with a schema library such as Zod/Joi. Login/refresh rate limiting is built in but in-memory (per process); use a shared store if you run several instances. Set `TRUST_PROXY` when behind a proxy so limits use the real client IP.
+
+Deploy order for the `20261117090000_attendance_insights_settings` migration: run `npx prisma migrate deploy` **before** starting the new code (the Prisma client reads the new `AttendanceSetting` columns).
+
+## Attendance insights
+
+`AttendanceSetting` now has `markingGraceMinutes` (15), `minAttendancePercent` (75),
+`atRiskAttendancePercent` (80) and `consecutiveAbsenceAlert` (3) per academic year.
+Teachers only see the classes they teach or are class teacher of; managers see all.
+
+| Endpoint | Permission |
+| --- | --- |
+| `GET /api/attendance/live?date&academicYearId&standardId` | `attendance.view` |
+| `GET /api/insights/at-risk?academicYearId&standardId&limit&includeAll` | `reports.attendance.view` |
+| `GET /api/insights/students/:studentId?academicYearId` | `reports.attendance.view` |
+| `GET /api/insights/admin?academicYearId&date` | `attendance.view_audit` or `attendance.session.generate` |
+| `GET /api/reports/attendance?academicYearId&standardId&from&to&eligibility&page&pageSize` | `reports.attendance.view` |
+
+Percentage = (PRESENT + LATE) / (all marked sessions − EXCUSED); EXCUSED sessions are
+left out of the denominator.
+`AttendanceAdjustment.points` are treated as percentage points and only applied to
+whole-year figures (no `from`/`to`). Summaries are template-generated (no external AI).
 
 
 ## Calendar and timetable rules

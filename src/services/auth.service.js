@@ -18,6 +18,10 @@ const include = {
   },
 };
 
+// Compared against when the email is unknown so response time does not reveal which accounts exist.
+let dummyHash;
+const getDummyHash = () => (dummyHash ??= hashPassword(randomToken()));
+
 const publicUser = (u) => {
   const permissions = resolvePermissions(u);
   return {
@@ -36,11 +40,8 @@ const publicUser = (u) => {
 export const login = async (email, password, { days = refreshDays } = {}) => {
   const user = await prisma.user.findUnique({ where: { email }, include });
 
-  if (
-    !user ||
-    !user.isActive ||
-    !(await comparePassword(password, user.passwordHash))
-  ) {
+  const passwordOk = await comparePassword(password, user ? user.passwordHash : await getDummyHash());
+  if (!user || !user.isActive || !passwordOk) {
     throw new ApiError(401, 'Invalid email or password');
   }
 

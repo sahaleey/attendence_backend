@@ -285,7 +285,7 @@ const getDatePeriodException = (date, periodIndex, exceptions) => {
   return null;
 };
 
-const getDateRules = async (academicYearId, date) => {
+export const getDateRules = async (academicYearId, date) => {
   const weekday = weekdayOfSchool(date);
   const [override, weeklyHoliday, exceptions] = await Promise.all([
     prisma.calendarOverride.findUnique({
@@ -331,9 +331,9 @@ const getDateRules = async (academicYearId, date) => {
 };
 
 const getTimetableEntriesForDate = async (academicYearId, date, weekday) => {
-  const [dateSpecificEntries, normalEntries] = await Promise.all([
+  const [allDateSpecificEntries, normalEntries] = await Promise.all([
     prisma.dateSpecificTimetableEntry.findMany({
-      where: { academicYearId, calendarDate: date, attendanceRequired: true },
+      where: { academicYearId, calendarDate: date },
       include: { period: true, standard: true, subject: true },
     }),
     prisma.timetableEntry.findMany({
@@ -343,10 +343,12 @@ const getTimetableEntriesForDate = async (academicYearId, date, weekday) => {
   ]);
 
   // A date-specific entry overrides the normal timetable only for the same
-  // class + period, not for every class using that period.
+  // class + period, not for every class using that period. Entries that do
+  // not require attendance still override (e.g. an assembly replacing a lesson).
   const overriddenKeys = new Set(
-    dateSpecificEntries.map((entry) => `${entry.standardId}:${entry.periodId}`)
+    allDateSpecificEntries.map((entry) => `${entry.standardId}:${entry.periodId}`)
   );
+  const dateSpecificEntries = allDateSpecificEntries.filter((entry) => entry.attendanceRequired);
 
   return [
     ...dateSpecificEntries.map((entry) => ({ ...entry, source: 'DATE_SPECIFIC_TIMETABLE' })),
@@ -356,19 +358,24 @@ const getTimetableEntriesForDate = async (academicYearId, date, weekday) => {
   ];
 };
 
-const getAssignment = async (academicYearId, entry) =>
-  prisma.staffSubjectAssignment.findFirst({
-    where: {
-      subjectAllocation: {
-        is: {
-          academicYearId,
-          standardId: entry.standardId,
-          subjectId: entry.subjectId,
-        },
+const getAssignment = async (academicYearId, entry) => {
+  const where = {
+    subjectAllocation: {
+      is: {
+        academicYearId,
+        standardId: entry.standardId,
+        subjectId: entry.subjectId,
       },
     },
-    orderBy: { id: 'asc' },
-  });
+  };
+  return (
+    (await prisma.staffSubjectAssignment.findFirst({
+      where: { ...where, staff: { isActive: true } },
+      orderBy: { id: 'asc' },
+    })) ||
+    prisma.staffSubjectAssignment.findFirst({ where, orderBy: { id: 'asc' } })
+  );
+};
 
 const getSubstitution = async (date, entry) =>
   prisma.periodSubstitution.findUnique({
@@ -514,6 +521,45 @@ export const generateForDate = async (academicYearId, dateInput) => {
     exceptionSkipped,
     reason: null,
   };
+};
+
+/**
+ * Read-only: timetable slots that should have an AttendanceSession on `date`
+ * but do not (never generated, or no staff assigned so generation skipped it).
+ */
+export const findMissingSessions = async (academicYearId, dateInput) => {
+  const date = parseDate(dateInput);
+  const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
+  if (!year) throw new ApiError(404, 'Academic year not found');
+  if (date < startOfDay(year.startDate) || date > endOfDay(year.endDate)) return [];
+
+  const rules = await getDateRules(academicYearId, date);
+  if (rules.blockedAllDay) return [];
+
+  const [entries, sessions] = await Promise.all([
+    getTimetableEntriesForDate(academicYearId, date, rules.weekday),
+    prisma.attendanceSession.findMany({
+      where: { academicYearId, attendanceDate: date },
+      select: { periodId: true, standardId: true },
+    }),
+  ]);
+  const existing = new Set(sessions.map((s) => `${s.standardId}:${s.periodId}`));
+
+  const missing = [];
+  for (const entry of entries) {
+    if (existing.has(`${entry.standardId}:${entry.periodId}`)) continue;
+    if (getDatePeriodException(date, entry.period.periodIndex, rules.exceptions)) continue;
+    const assignment = await getAssignment(academicYearId, entry);
+    missing.push({
+      date: dateKey(date),
+      standard: { id: entry.standard.id, code: entry.standard.code, name: entry.standard.name },
+      subject: { id: entry.subject.id, code: entry.subject.code, name: entry.subject.name },
+      period: { id: entry.period.id, periodIndex: entry.period.periodIndex, startTime: entry.period.startTime, endTime: entry.period.endTime },
+      source: entry.source,
+      reason: assignment ? 'NOT_GENERATED' : 'NO_STAFF_ASSIGNMENT',
+    });
+  }
+  return missing;
 };
 
 export const generateForDateRange = async (academicYearId, { from, to }) => {

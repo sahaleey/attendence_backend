@@ -56,10 +56,15 @@ export const refresh = async (req, res) => {
     throw new ApiError(401, 'Invalid refresh token');
   }
 
-  await prisma.refreshToken.update({
-    where: { id: old.id },
+  // Atomic claim: two concurrent refreshes with the same token cannot both succeed.
+  const claimed = await prisma.refreshToken.updateMany({
+    where: { id: old.id, revokedAt: null },
     data: { revokedAt: new Date() },
   });
+  if (claimed.count !== 1) throw new ApiError(401, 'Invalid refresh token');
+
+  const owner = await prisma.user.findUnique({ where: { id: old.userId }, select: { isActive: true } });
+  if (!owner?.isActive) throw new ApiError(401, 'Invalid refresh token');
 
   const days = mobile ? mobileRefreshDays : refreshDays;
   const next = randomToken();

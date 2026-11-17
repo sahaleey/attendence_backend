@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+import { activeEnrollmentFilter, isActiveEnrollment } from '../utils/enrollment-status.js';
 
 const VALID_STATUSES = new Set([
   'PROMOTED',
@@ -17,15 +18,21 @@ const normalizeDate = (value) => {
   return date;
 };
 
-const validateStatus = (status) => {
+const validateStatus = (status, { required = true } = {}) => {
   const normalized = String(status || '').trim().toUpperCase();
+  if (!normalized && !required) return 'ACTIVE';
   if (!VALID_STATUSES.has(normalized)) {
     throw new ApiError(
       400,
-      'Invalid enrollment status. Use PROMOTED, GRADUATED, WITHDRAWN, or ENROLLED.'
+      'Invalid enrollment status. Use ACTIVE (ENROLLED), PROMOTED, GRADUATED, or WITHDRAWN.'
     );
   }
-  return normalized === 'ACTIVE' ? 'ENROLLED' : normalized;
+  return isActiveEnrollment(normalized) ? 'ACTIVE' : normalized;
+};
+
+const statusFilter = (status) => {
+  const normalized = validateStatus(status);
+  return normalized === 'ACTIVE' ? activeEnrollmentFilter() : normalized;
 };
 
 const getAcademicYearAndStandard = async (academicYearId, standardId) => {
@@ -65,7 +72,7 @@ export const list = async ({ academicYearId, standardId, status, search }) => {
   const where = { academicYearId };
 
   if (standardId) where.standardId = standardId;
-  if (status) where.status = validateStatus(status);
+  if (status) where.status = statusFilter(status);
 
   if (search?.trim()) {
     const value = search.trim();
@@ -129,7 +136,7 @@ export const bulkEnroll = async ({ academicYearId, standardId, status, enrollmen
     throw new ApiError(400, 'academicYearId and standardId are required');
   }
 
-  const normalizedStatus = validateStatus(status);
+  const normalizedStatus = validateStatus(status, { required: false });
   const rows = validateInputRows(enrollments);
   await getAcademicYearAndStandard(academicYearId, standardId);
 

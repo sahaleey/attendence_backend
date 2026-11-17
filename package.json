@@ -9,6 +9,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "node prisma/seed.js",
+    "seed:demo": "node prisma/seed.js --demo",
+    "test": "node --test",
     "format": "prettier --write .",
     "prisma:validate": "prisma validate",
     "prisma:format": "prisma format",

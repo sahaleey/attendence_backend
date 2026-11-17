@@ -12,7 +12,7 @@ export const getSession = async (req, res) =>
   res.json({
     data: await service.getStudentsForSession(
       req.params.sessionId,
-      req.user.id
+      req.user
     ),
   });
 export const markAttendance = async (req, res) => {

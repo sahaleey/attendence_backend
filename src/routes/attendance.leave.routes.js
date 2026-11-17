@@ -32,23 +32,23 @@ router.post(
 
 /**
  * Explicitly set a session to STAFF_LEAVE.
- * Admin-only.
+ * Requires leave-approval rights, not just marking rights.
  */
 router.post(
   '/mark-session',
   authenticate,
-  requirePermission(P.ATTENDANCE_MARK),
+  requirePermission(P.STAFF_LEAVE_APPROVE),
   asyncHandler(ctrl.markSessionAsLeave)
 );
 
 /**
  * Bulk mark all PENDING sessions for a staff between dates.
- * Admin-only. Hook this into StaffLeave approval.
+ * Hook this into StaffLeave approval.
  */
 router.post(
   '/bulk-mark',
   authenticate,
-  requirePermission(P.ATTENDANCE_MARK),
+  requirePermission(P.STAFF_LEAVE_APPROVE),
   asyncHandler(ctrl.bulkMarkLeaveSessions)
 );
 

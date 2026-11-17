@@ -1,100 +1,228 @@
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+
 import P from "../src/permissions/permission.constants.js";
 import ROLE_PERMISSIONS from "../src/permissions/permission-map.js";
 import { labelOf } from "../src/permissions/permission-catalog.js";
+import { seedDemo } from "./seed-demo.js";
 
-const db = new PrismaClient();
+const db = new PrismaClient({
+  log: ["error", "warn"],
+});
 
-// Helper functions
-function randomDate(start, end) {
-  return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
-}
+// Configuration
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || "admin@example.com";
+const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
+const WITH_DEMO = process.argv.includes("--demo") || process.env.SEED_DEMO === "true";
+const STEPS = WITH_DEMO ? 4 : 3;
 
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+async function seedPermissions() {
+  console.log(`\n[1/${STEPS}] Seeding permissions...`);
 
-function randomItem(array) {
-  return array[Math.floor(Math.random() * array.length)];
-}
+  const permissionNames = [...new Set(Object.values(P))];
 
-function formatDate(date) {
-  return date.toISOString().split('T')[0];
-}
-
-async function main() {
-  // ==================== PERMISSIONS & ROLES ====================
-  const permissionMap = {};
-
-  for (const name of Object.values(P)) {
-    const row = await db.permission.upsert({
-      where: { name },
-      update: {},
-      create: { name, description: labelOf(name) },
-    });
-    permissionMap[name] = row.id;
+  if (permissionNames.length === 0) {
+    console.log("No permissions found.");
+    return {};
   }
 
-  for (const [roleName, permissions] of Object.entries(ROLE_PERMISSIONS)) {
-    const role = await db.role.upsert({
-      where: { name: roleName },
-      update: {},
-      create: { name: roleName, description: `${roleName} role` },
-    });
+  // Insert missing permissions in one database operation.
+  await db.permission.createMany({
+    data: permissionNames.map((name) => ({
+      name,
+      description: labelOf(name),
+    })),
+    skipDuplicates: true,
+  });
 
-    await db.rolePermission.deleteMany({ where: { roleId: role.id } });
-    await db.rolePermission.createMany({
-      data: permissions.map((name) => ({
-        roleId: role.id,
-        permissionId: permissionMap[name],
-      })),
-    });
-  }
+  // Fetch all permissions and build name -> ID mapping.
+  const permissions = await db.permission.findMany({
+    where: {
+      name: { in: permissionNames },
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
 
-  // ==================== ADMIN USER ====================
-  const passwordHash = await bcrypt.hash(
-    process.env.SEED_ADMIN_PASSWORD || "ChangeMe123!",
-    12,
+  const permissionMap = Object.fromEntries(
+    permissions.map(({ name, id }) => [name, id])
   );
 
+  const missingPermissions = permissionNames.filter(
+    (name) => !permissionMap[name]
+  );
+
+  if (missingPermissions.length > 0) {
+    throw new Error(
+      `Missing permissions: ${missingPermissions.join(", ")}`
+    );
+  }
+
+  console.log(`   ✓ ${permissions.length} permissions ready.`);
+
+  return permissionMap;
+}
+
+async function seedRoles(permissionMap) {
+  console.log(`\n[2/${STEPS}] Seeding roles...`);
+
+  const roleEntries = Object.entries(ROLE_PERMISSIONS);
+
+  for (const [roleName, permissionNames] of roleEntries) {
+    const unknownPermissions = permissionNames.filter(
+      (name) => !permissionMap[name]
+    );
+
+    if (unknownPermissions.length > 0) {
+      throw new Error(
+        `Role "${roleName}" references unknown permissions: ${
+          unknownPermissions.join(", ")
+        }`
+      );
+    }
+  }
+
+  // Create missing roles without overwriting existing descriptions.
+  await db.role.createMany({
+    data: roleEntries.map(([name]) => ({
+      name,
+      description: `${name} role`,
+    })),
+    skipDuplicates: true,
+  });
+
+  const roles = await db.role.findMany({
+    where: {
+      name: { in: roleEntries.map(([name]) => name) },
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  const roleMap = Object.fromEntries(
+    roles.map(({ name, id }) => [name, id])
+  );
+
+  // Create only missing role-permission relationships.
+  // Existing relationships are preserved.
+  const rolePermissionData = roleEntries.flatMap(
+    ([roleName, permissionNames]) =>
+      permissionNames.map((permissionName) => ({
+        roleId: roleMap[roleName],
+        permissionId: permissionMap[permissionName],
+      }))
+  );
+
+  if (rolePermissionData.length > 0) {
+    await db.rolePermission.createMany({
+      data: rolePermissionData,
+      skipDuplicates: true,
+    });
+  }
+
+  console.log(`   ✓ ${roles.length} roles ready.`);
+  console.log(
+    `   ✓ ${rolePermissionData.length} role-permission mappings ensured.`
+  );
+
+  return roleMap;
+}
+
+async function seedAdmin(roleMap) {
+  console.log(`\n[3/${STEPS}] Seeding administrator...`);
+
+  if (!ADMIN_PASSWORD) {
+    throw new Error(
+      "SEED_ADMIN_PASSWORD is missing from your .env file. " +
+      "Set a strong password before running the seed."
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 12);
+
   const admin = await db.user.upsert({
-    where: { email: process.env.SEED_ADMIN_EMAIL || "admin@example.com" },
-    update: { isActive: true },
+    where: { email: ADMIN_EMAIL },
+    update: {
+      isActive: true,
+    },
     create: {
       name: "System Administrator",
-      email: process.env.SEED_ADMIN_EMAIL || "admin@example.com",
+      email: ADMIN_EMAIL,
       passwordHash,
     },
   });
 
-  // Get or create ADMIN role
-  let adminRole = await db.role.findUnique({
-    where: { name: "ADMIN" }
-  });
+  const adminRoleId = roleMap.ADMIN;
 
-  if (!adminRole) {
-    adminRole = await db.role.create({
-      data: { name: "ADMIN", description: "Administrator role" }
-    });
+  if (!adminRoleId) {
+    throw new Error(
+      'ADMIN role was not found. Ensure ROLE_PERMISSIONS contains "ADMIN".'
+    );
   }
 
   await db.userRole.upsert({
-    where: { userId_roleId: { userId: admin.id, roleId: adminRole.id } },
-    create: { userId: admin.id, roleId: adminRole.id },
+    where: {
+      userId_roleId: {
+        userId: admin.id,
+        roleId: adminRoleId,
+      },
+    },
+    create: {
+      userId: admin.id,
+      roleId: adminRoleId,
+    },
     update: {},
   });
 
+  console.log(`   ✓ Administrator ready: ${ADMIN_EMAIL}`);
+}
 
-  console.log(`✅ Seed complete!`);
+async function main() {
+  const startedAt = Date.now();
 
+  console.log("========================================");
+  console.log("       ATTENDANCE DATABASE SEED");
+  console.log("========================================");
+
+  console.log("\nChecking database connection...");
+
+  await db.$connect();
+
+  console.log("✓ Database connected.");
+
+  const permissionMap = await seedPermissions();
+  const roleMap = await seedRoles(permissionMap);
+
+  await seedAdmin(roleMap);
+
+  if (WITH_DEMO) {
+    console.log(`\n[4/${STEPS}] Seeding demo school data...`);
+    await seedDemo(db, roleMap);
+  }
+
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(2);
+
+  console.log("\n========================================");
+  console.log("       ✓ SEED COMPLETED SUCCESSFULLY");
+  console.log(`       Time: ${elapsed} seconds`);
+  console.log("========================================");
 }
 
 main()
   .catch((error) => {
+    console.error("\n========================================");
+    console.error("       ✗ SEED FAILED");
+    console.error("========================================");
     console.error(error);
+
     process.exitCode = 1;
   })
   .finally(async () => {
     await db.$disconnect();
+    console.log("\nDatabase connection closed.");
   });

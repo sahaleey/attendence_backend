@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma.js';
+import { ApiError } from '../utils/api-error.js';
 
 class StaffAssignmentService {
   /**
@@ -141,7 +142,7 @@ class StaffAssignmentService {
       });
 
       if (!allocation) {
-        throw new Error(`No subject allocation found for the given academic year, class and subject. Generate data first.`);
+        throw new ApiError(404, `No subject allocation found for the given academic year, class and subject. Generate data first.`);
       }
 
       // 2. Remove any existing staff assignments for this slot
@@ -168,7 +169,7 @@ class StaffAssignmentService {
         include: { user: { select: { name: true } } }
       });
       if (!staff) {
-        throw new Error(`Staff with ID ${staffId} not found`);
+        throw new ApiError(404, `Staff with ID ${staffId} not found`);
       }
 
       // 5. Create new assignment
@@ -211,7 +212,7 @@ class StaffAssignmentService {
 
       if (staffId) {
         const staff = await tx.staff.findUnique({ where: { id: staffId } });
-        if (!staff) throw new Error('Staff not found');
+        if (!staff) throw new ApiError(404, 'Staff not found');
 
         // Ensure no duplicate for same slot (maintain single-staff-per-slot)
         await tx.staffSubjectAssignment.deleteMany({

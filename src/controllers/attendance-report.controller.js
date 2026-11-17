@@ -19,6 +19,7 @@ export const getUnmarkedReport = async (req, res) =>
       to: req.query.to,
       standardId: req.query.standardId,
       staffId: req.query.staffId,
+      status: req.query.status,
       page: req.query.page,
       pageSize: req.query.pageSize,
     }),

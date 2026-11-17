@@ -10,7 +10,7 @@ r.post('/academic-year/:academicYearId/generate-range', authenticate, requirePer
 r.get(
     '/academic-year/:academicYearId/sessions',
     authenticate,
-   
+    requirePermission(P.ATTENDANCE_VIEW),
     asyncHandler(c.list)
 );
 export default r;

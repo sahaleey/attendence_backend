@@ -41,9 +41,16 @@ export const currentMinutes = (date = new Date()) => {
 // representing 00:00:00.000 in Asia/Kolkata.
 export const parseSchoolDate = (value) => {
   if (value instanceof Date) return startOfDay(value);
-  const raw = String(value).slice(0, 10);
+  const raw = String(value).trim();
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
-  if (!match) throw new Error(`Invalid school date: ${value}`);
+  if (!match) {
+    // Full timestamps carry an offset; slicing them would pick the UTC date, not the school date.
+    if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+      const instant = new Date(raw);
+      if (!Number.isNaN(instant.getTime())) return startOfDay(instant);
+    }
+    throw new Error(`Invalid school date: ${value}`);
+  }
   const [, y, m, d] = match.map(Number);
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0) - IST_OFFSET_MINUTES * 60 * 1000);
 };
@@ -93,7 +100,8 @@ export const parseSchoolDateStrict = (value, field = 'date') => {
   }
   if (Number.isNaN(parsed.getTime())) throw new ApiError(400, `Invalid ${field}`);
   // Reject impossible calendar dates such as 2026-02-31.
-  if (!(value instanceof Date) && todayKey(parsed) !== String(value).slice(0, 10)) {
+  const raw = String(value).trim();
+  if (!(value instanceof Date) && /^\d{4}-\d{2}-\d{2}$/.test(raw) && todayKey(parsed) !== raw) {
     throw new ApiError(400, `Invalid ${field}`);
   }
   return parsed;

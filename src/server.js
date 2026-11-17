@@ -12,10 +12,23 @@ import { syncPermissions } from './services/access.service.js';
 
 const app = express();
 
+// Needed behind a reverse proxy so req.ip (used by the rate limiter) is the client's address.
+if (process.env.TRUST_PROXY) {
+  const v = process.env.TRUST_PROXY;
+  app.set('trust proxy', /^\d+$/.test(v) ? Number(v) : v === 'true' ? true : v);
+}
+
 app.use(cors({ origin: frontendUrl, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
-
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Attendance Management API is running",
+    version: "1.0.0",
+    status: "healthy"
+  });
+});
 app.get('/api/health', async (req, res, next) => {
   try {
     await prisma.$queryRaw`SELECT 1`;

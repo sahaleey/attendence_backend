@@ -523,6 +523,8 @@ model AttendanceSession {
 
   @@unique([attendanceDate, periodId, standardId])
   @@index([staffId, attendanceDate])
+  @@index([academicYearId, sessionStatus, attendanceDate])
+  @@index([standardId, attendanceDate])
 }
 
 model StudentAttendance {
@@ -620,11 +622,16 @@ model TimetableSetting {
 }
 
 model AttendanceSetting {
-  id               String       @id @default(uuid())
-  academicYearId   String       @unique
-  markingDeadline  String       @default("21:00")
-  allowLateMarking Boolean      @default(false)
-  academicYear     AcademicYear @relation(fields: [academicYearId], references: [id])
+  id                      String       @id @default(uuid())
+  academicYearId          String       @unique
+  markingDeadline         String       @default("21:00")
+  allowLateMarking        Boolean      @default(false)
+  // Minutes after a period ends before it counts as overdue on the live board.
+  markingGraceMinutes     Int          @default(15)
+  minAttendancePercent    Int          @default(75)
+  atRiskAttendancePercent Int          @default(80)
+  consecutiveAbsenceAlert Int          @default(3)
+  academicYear            AcademicYear @relation(fields: [academicYearId], references: [id])
 }
 
 model RefreshToken {

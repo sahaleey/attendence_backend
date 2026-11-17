@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/authenticate.js";
+import { requirePermission, requireAnyPermission } from "../middleware/authorize.js";
+import P from "../permissions/permission.constants.js";
 import {
   getMyWeeklyTimetableController,
   getMyTodayPeriodsController,
@@ -11,14 +13,15 @@ import {
 const router = Router();
 
 /* My timetable */
-router.get("/me", authenticate, getMyWeeklyTimetableController);
-router.get("/me/today", authenticate, getMyTodayPeriodsController);
+const canViewOwn = requireAnyPermission([P.TIMETABLE_VIEW, P.ATTENDANCE_MARK]);
+router.get("/me", authenticate, canViewOwn, getMyWeeklyTimetableController);
+router.get("/me/today", authenticate, canViewOwn, getMyTodayPeriodsController);
 
 /* Class timetable */
-router.get("/classes", authenticate, getClassListController);
-router.get("/classes/:standardId", authenticate, getClassTimetableController);
+router.get("/classes", authenticate, requirePermission(P.TIMETABLE_VIEW), getClassListController);
+router.get("/classes/:standardId", authenticate, requirePermission(P.TIMETABLE_VIEW), getClassTimetableController);
 
 /* Changes */
-router.get("/changes", authenticate, getTimetableChangesController);
+router.get("/changes", authenticate, canViewOwn, getTimetableChangesController);
 
 export default router;

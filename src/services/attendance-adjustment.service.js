@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+import { isActiveEnrollment } from '../utils/enrollment-status.js';
 
 const parsePoints = (value) => {
   if (value === undefined || value === null || value === '') {
@@ -41,7 +42,7 @@ export const create = async ({
       },
     });
 
-    if (!enrollment || enrollment.status !== 'ACTIVE') {
+    if (!enrollment || !isActiveEnrollment(enrollment.status)) {
       throw new ApiError(400, 'Student is not actively enrolled in this academic year');
     }
 

@@ -4,6 +4,7 @@ import { requirePermission } from '../middleware/authorize.js';
 import P from '../permissions/permission.constants.js';
 import asyncHandler from '../utils/async-handler.js';
 import * as attendanceReportController from '../controllers/attendance-report.controller.js';
+import * as insightsController from '../controllers/attendance-insights.controller.js';
 
 const router = Router();
 
@@ -33,8 +34,12 @@ router.get(
   asyncHandler(attendanceReportController.getUnmarkedReport),
 );
 
-router.get('/attendance', authenticate, requirePermission(P.REPORTS_ATTENDANCE_VIEW), async (req, res) =>
-  res.json({ message: 'Attendance report endpoint ready for implementation' }),
+// Per-student attendance percentage and exam eligibility.
+router.get(
+  '/attendance',
+  authenticate,
+  requirePermission(P.REPORTS_ATTENDANCE_VIEW),
+  asyncHandler(insightsController.getPercentageReport),
 );
 
 router.get('/audit', authenticate, requirePermission(P.REPORTS_AUDIT_VIEW), async (req, res) =>

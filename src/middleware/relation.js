@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma.js';
+import { ApiError } from '../utils/api-error.js';
 
 export const requireAttendanceSessionStaffRelation = async (req, res, next) => {
   const session = await prisma.attendanceSession.findUnique({
